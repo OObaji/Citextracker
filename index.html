@@ -141,23 +141,21 @@
         function CitexTracker() {
             // -- Cloud State --
             const [projectId, setProjectId] = useState(() => {
-                // Priority 1: Check URL for ID (allows sharing link to sync)
                 const params = new URLSearchParams(window.location.search);
                 const urlId = params.get('id');
                 if (urlId) return urlId;
-
-                // Priority 2: Check Local Storage
                 const cached = localStorage.getItem('citex_project_id');
                 if (cached) return cached;
-
-                // Priority 3: NONE. Do not generate random ID automatically.
-                // This forces the "Login" screen to appear if no ID is found.
                 return null;
             });
 
-            const [inputProjectId, setInputProjectId] = useState(""); // For the login screen input
+            const [inputProjectId, setInputProjectId] = useState(""); 
             const [isCloudSyncing, setIsCloudSyncing] = useState(false);
             const [syncStatus, setSyncStatus] = useState('Idle');
+
+            // -- Interaction State --
+            const lastLocalEdit = useRef(0);
+            const saveTimeout = useRef(null);
 
             // -- App State --
             const [data, setData] = useState({});
@@ -175,16 +173,13 @@
             useEffect(() => {
                 if (projectId) {
                     localStorage.setItem('citex_project_id', projectId);
-                    
                     try {
                         const url = new URL(window.location);
                         if (url.searchParams.get('id') !== projectId) {
                             url.searchParams.set('id', projectId);
                             window.history.replaceState({}, '', url);
                         }
-                    } catch (e) {
-                        // Ignore preview environment security errors
-                    }
+                    } catch (e) {}
                 }
             }, [projectId]);
 
@@ -192,7 +187,7 @@
             
             // 1. Initial Load
             useEffect(() => {
-                if (!projectId) return; // Don't load if no project ID
+                if (!projectId) return;
 
                 const loadData = async () => {
                     if (!supabaseClient) return;
@@ -206,16 +201,14 @@
                             .eq('project_id', projectId)
                             .single();
                         
-                        if (error && error.code !== 'PGRST116') { // PGRST116 is "Row not found"
+                        if (error && error.code !== 'PGRST116') {
                             console.error('Error loading:', error);
-                            // If table doesn't exist or other error, fallback to local
                             initializeDefaultData();
                         } else if (remoteRow) {
                             if (remoteRow.data) setData(remoteRow.data);
                             if (remoteRow.global_target) setGlobalTarget(remoteRow.global_target);
                             if (remoteRow.daily_goal) setDailyGoal(remoteRow.daily_goal);
                         } else {
-                            // Initialize default if no cloud data (New Project with this ID)
                             initializeDefaultData();
                         }
                     } catch (err) {
@@ -232,11 +225,17 @@
                 let channel;
                 if (supabaseClient) {
                     channel = supabaseClient
-                        .channel('citex_realtime')
+                        .channel(`citex_project_${projectId}`)
                         .on(
                             'postgres_changes',
                             { event: '*', schema: 'public', table: 'citex_projects', filter: `project_id=eq.${projectId}` },
                             (payload) => {
+                                // IMPORTANT: Ignore update if user edited locally in last 2 seconds
+                                if (Date.now() - lastLocalEdit.current < 2000) {
+                                    console.log("Ignoring update due to local activity");
+                                    return;
+                                }
+
                                 if (payload.new) {
                                     const newData = payload.new;
                                     if (newData.data) setData(newData.data);
@@ -255,10 +254,8 @@
             }, [projectId]);
 
             const initializeDefaultData = () => {
-                // Try legacy localstorage first (only if migrating from V2 local)
                 const legacyData = localStorage.getItem('citex_tracker_data_v2');
                 if (legacyData && !localStorage.getItem('citex_project_id')) {
-                    // Only use legacy data if we just created a new project ID for the first time
                     try {
                         const parsed = JSON.parse(legacyData);
                         setData(parsed);
@@ -267,7 +264,6 @@
                     } catch(e) {}
                 }
 
-                // Fresh Init
                 const initialData = {};
                 STYLES.forEach(style => {
                     initialData[style] = {};
@@ -279,13 +275,10 @@
                 setData(initialData);
             };
 
-            // 3. Save Function
-            const saveToCloud = useCallback(async (newData, newTarget, newGoal) => {
+            // 3. Save Function (Directly calls API)
+            const performSave = useCallback(async (newData, newTarget, newGoal) => {
                 if (!supabaseClient || !projectId) return;
 
-                setSyncStatus('Saving...');
-                setIsCloudSyncing(true);
-                
                 const { error } = await supabaseClient
                     .from('citex_projects')
                     .upsert({ 
@@ -302,6 +295,16 @@
                 setSyncStatus('Saved');
                 setTimeout(() => setSyncStatus('Ready'), 2000);
             }, [projectId]);
+
+            // Debounced Wrapper for Save
+            const debouncedSave = useCallback((d, t, g) => {
+                if (saveTimeout.current) clearTimeout(saveTimeout.current);
+                setSyncStatus('Typing...');
+                setIsCloudSyncing(true);
+                saveTimeout.current = setTimeout(() => {
+                    performSave(d, t, g);
+                }, 500); // 500ms debounce
+            }, [performSave]);
 
 
             // -- Handlers --
@@ -326,6 +329,8 @@
             }
 
             const handleUpdateCount = (style, branch, subItem, value) => {
+                lastLocalEdit.current = Date.now(); // Mark local edit time
+                
                 const newVal = Math.max(0, parseInt(value) || 0);
                 const newData = {
                     ...data,
@@ -337,23 +342,29 @@
                         }
                     }
                 };
+                
+                // Update Local UI instantly
                 setData(newData);
-                saveToCloud(newData, globalTarget, dailyGoal);
+                
+                // Queue Cloud Save
+                debouncedSave(newData, globalTarget, dailyGoal);
             };
 
             const handleTargetChange = (val) => {
+                lastLocalEdit.current = Date.now();
                 const num = Number(val);
                 setGlobalTarget(num);
-                saveToCloud(data, num, dailyGoal);
+                debouncedSave(data, num, dailyGoal);
             }
 
             const handleDailyGoalChange = (val) => {
+                lastLocalEdit.current = Date.now();
                 if (val === '') { setDailyGoal(''); return; }
                 const num = parseInt(val);
                 if (!isNaN(num)) {
                     const cleanNum = Math.max(0, num);
                     setDailyGoal(cleanNum);
-                    saveToCloud(data, globalTarget, cleanNum);
+                    debouncedSave(data, globalTarget, cleanNum);
                 }
             };
 
