@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Citex Project Tracker</title>
     
     <!-- React & ReactDOM -->
@@ -15,31 +15,33 @@
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
+    <!-- Supabase JS -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
     <style>
-        /* Custom scrollbar to match the sleek design */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        ::-webkit-scrollbar-track {
-            background: #f1f1f1; 
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #cbd5e1; 
-            border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #94a3b8; 
-        }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .animate-pulse-slow { animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
+        button, input, select { touch-action: manipulation; }
     </style>
 </head>
 <body class="bg-[#F2F2F2]">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect, useMemo, useCallback, useRef } = React;
+        const { createClient } = supabase;
 
-        // --- Icons (Inline SVGs to avoid dependencies) ---
+        // --- Supabase Configuration ---
+        const SUPABASE_URL = 'https://hpyialendcqctvhsxqzb.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhweWlhbGVuZGNxY3R2aHN4cXpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAwMzYxOTUsImV4cCI6MjA4NTYxMjE5NX0.ELSRI6W9XZDFq9wGO5OH2MbK1Pgv9v_7uyVPmQSfzMw';
+
+        const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // --- Icons ---
         const Icon = ({ children, className }) => (
             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
                 {children}
@@ -61,11 +63,12 @@
         const Quote = ({ className }) => <Icon className={className}><path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z" /><path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/></Icon>;
         const Calendar = ({ className }) => <Icon className={className}><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10"/></Icon>;
         const Target = ({ className }) => <Icon className={className}><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2"/></Icon>;
+        const Cloud = ({ className }) => <Icon className={className}><path d="M17.5 19c0-3.037-2.463-5.5-5.5-5.5S6.5 15.963 6.5 19" /><path d="M12 13.5v-7" /><path d="m15.5 10-3.5-3.5L8.5 10" /></Icon>;
+        const Copy = ({ className }) => <Icon className={className}><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></Icon>;
 
-        // --- Constants & Config ---
 
+        // --- Constants ---
         const STYLES = ['Harvard', 'MLA', 'APA', 'Chicago', 'MHRA'];
-
         const BRANCHES = {
             'Reference List': {
                 icon: List,
@@ -92,20 +95,15 @@
         };
 
         // --- Components ---
-
         const ProgressBar = ({ current, total }) => {
             const percentage = total > 0 ? Math.min(100, Math.max(0, (current / total) * 100)) : 0;
-            
             let colorClass = 'bg-pink-500';
             if (percentage >= 50) colorClass = 'bg-yellow-500';
             if (percentage >= 100) colorClass = 'bg-green-500';
 
             return (
                 <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2 overflow-hidden">
-                    <div 
-                        className={`${colorClass} h-2.5 rounded-full transition-all duration-500 ease-out`} 
-                        style={{ width: `${percentage}%` }}
-                    ></div>
+                    <div className={`${colorClass} h-2.5 rounded-full transition-all duration-500 ease-out`} style={{ width: `${percentage}%` }}></div>
                 </div>
             );
         };
@@ -124,121 +122,178 @@
         );
 
         function CitexTracker() {
-            // State
+            // -- Cloud State --
+            const [projectId, setProjectId] = useState(() => localStorage.getItem('citex_project_id') || crypto.randomUUID());
+            const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+            const [syncStatus, setSyncStatus] = useState('Idle');
+
+            // -- App State --
             const [data, setData] = useState({});
             const [globalTarget, setGlobalTarget] = useState(DEFAULT_TARGET);
             const [dailyGoal, setDailyGoal] = useState(DEFAULT_DAILY_GOAL);
+            
+            // -- UI State --
             const [expandedStyles, setExpandedStyles] = useState({});
             const [filterStyle, setFilterStyle] = useState('All');
             const [showCompleted, setShowCompleted] = useState(true);
             const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-            // Initialize Data Structure
+            // Persist Project ID
             useEffect(() => {
-                const savedData = localStorage.getItem('citex_tracker_data_v2');
-                const savedGoal = localStorage.getItem('citex_daily_goal');
-                
-                if (savedGoal) setDailyGoal(Number(savedGoal));
+                localStorage.setItem('citex_project_id', projectId);
+            }, [projectId]);
 
-                if (savedData) {
-                    setData(JSON.parse(savedData));
-                } else {
-                    const initialData = {};
-                    STYLES.forEach(style => {
-                        initialData[style] = {};
-                        initialData[style]['Reference List'] = {};
-                        BRANCHES['Reference List'].items.forEach(item => {
-                            initialData[style]['Reference List'][item] = 0;
-                        });
-                        initialData[style]['In-text Citation'] = {};
-                        BRANCHES['In-text Citation'].items.forEach(item => {
-                            initialData[style]['In-text Citation'][item] = 0;
-                        });
-                    });
-                    setData(initialData);
-                }
-            }, []);
-
-            // Save to LocalStorage
+            // --- Database Sync (Supabase) ---
+            
+            // 1. Initial Load
             useEffect(() => {
-                if (Object.keys(data).length > 0) {
-                    localStorage.setItem('citex_tracker_data_v2', JSON.stringify(data));
-                }
-            }, [data]);
+                const loadData = async () => {
+                    setIsCloudSyncing(true);
+                    setSyncStatus('Loading...');
+                    try {
+                        const { data: remoteRow, error } = await supabaseClient
+                            .from('citex_projects')
+                            .select('*')
+                            .eq('project_id', projectId)
+                            .single();
+                        
+                        if (error && error.code !== 'PGRST116') { // PGRST116 is "Row not found"
+                            console.error('Error loading:', error);
+                        }
 
-            useEffect(() => {
-                if (typeof dailyGoal === 'number' && dailyGoal > 0) {
-                    localStorage.setItem('citex_daily_goal', dailyGoal);
-                }
-            }, [dailyGoal]);
-
-            // Calculations
-            const stats = useMemo(() => {
-                let totalTasks = 0;
-                let completedTasks = 0;
-                let totalQuestionsLogged = 0;
-                let totalQuestionsTarget = 0;
-
-                Object.keys(data).forEach(style => {
-                    Object.keys(data[style]).forEach(branch => {
-                        Object.keys(data[style][branch]).forEach(subCategory => {
-                            const count = data[style][branch][subCategory];
-                            totalTasks++;
-                            totalQuestionsLogged += count;
-                            totalQuestionsTarget += globalTarget;
-                            if (count >= globalTarget) completedTasks++;
-                        });
-                    });
-                });
-
-                const overallProgress = totalQuestionsTarget > 0 ? (totalQuestionsLogged / totalQuestionsTarget) * 100 : 0;
-                const remainingQuestions = Math.max(0, totalQuestionsTarget - totalQuestionsLogged);
-                
-                const safeDailyGoal = Number(dailyGoal) > 0 ? Number(dailyGoal) : 1; 
-                const daysRemaining = Math.ceil(remainingQuestions / safeDailyGoal);
-                
-                const finishDate = new Date();
-                finishDate.setDate(finishDate.getDate() + daysRemaining);
-                const options = { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' };
-                const formattedDate = finishDate.toLocaleDateString('en-US', options);
-
-                return {
-                    totalTasks,
-                    completedTasks,
-                    totalQuestionsLogged,
-                    totalQuestionsTarget,
-                    overallProgress,
-                    remainingQuestions,
-                    daysRemaining,
-                    formattedDate
+                        if (remoteRow) {
+                            if (remoteRow.data) setData(remoteRow.data);
+                            if (remoteRow.global_target) setGlobalTarget(remoteRow.global_target);
+                            if (remoteRow.daily_goal) setDailyGoal(remoteRow.daily_goal);
+                        } else {
+                            // Initialize default if no cloud data
+                            initializeDefaultData();
+                        }
+                    } catch (err) {
+                        console.error("Fetch Error:", err);
+                        initializeDefaultData();
+                    } finally {
+                        setIsCloudSyncing(false);
+                        setSyncStatus('Ready');
+                    }
                 };
-            }, [data, globalTarget, dailyGoal]);
+                loadData();
 
-            // Handlers
+                // 2. Realtime Subscription
+                const channel = supabaseClient
+                    .channel('citex_realtime')
+                    .on(
+                        'postgres_changes',
+                        { event: '*', schema: 'public', table: 'citex_projects', filter: `project_id=eq.${projectId}` },
+                        (payload) => {
+                            if (payload.new) {
+                                const newData = payload.new;
+                                if (newData.data) setData(newData.data);
+                                if (newData.global_target) setGlobalTarget(newData.global_target);
+                                if (newData.daily_goal) setDailyGoal(newData.daily_goal);
+                            }
+                        }
+                    )
+                    .subscribe();
+
+                return () => {
+                    supabaseClient.removeChannel(channel);
+                }
+
+            }, [projectId]);
+
+            const initializeDefaultData = () => {
+                // Try legacy localstorage first
+                const legacyData = localStorage.getItem('citex_tracker_data_v2');
+                if (legacyData) {
+                    try {
+                        const parsed = JSON.parse(legacyData);
+                        setData(parsed);
+                        saveToCloud(parsed, globalTarget, dailyGoal);
+                        return;
+                    } catch(e) {}
+                }
+
+                // Fresh Init
+                const initialData = {};
+                STYLES.forEach(style => {
+                    initialData[style] = {};
+                    initialData[style]['Reference List'] = {};
+                    BRANCHES['Reference List'].items.forEach(item => initialData[style]['Reference List'][item] = 0);
+                    initialData[style]['In-text Citation'] = {};
+                    BRANCHES['In-text Citation'].items.forEach(item => initialData[style]['In-text Citation'][item] = 0);
+                });
+                setData(initialData);
+                // Don't auto-save blank on init to save DB calls, wait for user interaction
+            };
+
+            // 3. Save Function
+            const saveToCloud = useCallback(async (newData, newTarget, newGoal) => {
+                setSyncStatus('Saving...');
+                setIsCloudSyncing(true);
+                
+                const { error } = await supabaseClient
+                    .from('citex_projects')
+                    .upsert({ 
+                        project_id: projectId,
+                        data: newData,
+                        global_target: newTarget,
+                        daily_goal: newGoal,
+                        last_updated: new Date().toISOString()
+                    }, { onConflict: 'project_id' });
+
+                if (error) console.error("Save Error:", error);
+                
+                setIsCloudSyncing(false);
+                setSyncStatus('Saved');
+                setTimeout(() => setSyncStatus('Ready'), 2000);
+            }, [projectId]);
+
+
+            // -- Handlers --
+
             const handleUpdateCount = (style, branch, subItem, value) => {
                 const newVal = Math.max(0, parseInt(value) || 0);
-                setData(prev => ({
-                    ...prev,
+                const newData = {
+                    ...data,
                     [style]: {
-                        ...prev[style],
+                        ...data[style],
                         [branch]: {
-                            ...prev[style][branch],
+                            ...data[style][branch],
                             [subItem]: newVal
                         }
                     }
-                }));
+                };
+                setData(newData);
+                // Debounce save? For now direct save is safer for user trust
+                saveToCloud(newData, globalTarget, dailyGoal);
             };
 
+            const handleTargetChange = (val) => {
+                const num = Number(val);
+                setGlobalTarget(num);
+                saveToCloud(data, num, dailyGoal);
+            }
+
             const handleDailyGoalChange = (val) => {
-                if (val === '') {
-                    setDailyGoal('');
-                    return;
-                }
+                if (val === '') { setDailyGoal(''); return; }
                 const num = parseInt(val);
                 if (!isNaN(num)) {
-                    setDailyGoal(Math.max(0, num));
+                    const cleanNum = Math.max(0, num);
+                    setDailyGoal(cleanNum);
+                    saveToCloud(data, globalTarget, cleanNum);
                 }
             };
+
+            const handleProjectIdChange = (e) => {
+                setProjectId(e.target.value);
+            };
+
+            const generateNewProjectId = () => {
+                if(confirm("Generate a new Project ID? This will switch to a blank or new tracker.")) {
+                    setProjectId(crypto.randomUUID());
+                }
+            }
 
             const toggleStyle = (style) => {
                 setExpandedStyles(prev => ({ ...prev, [style]: !prev[style] }));
@@ -255,32 +310,59 @@
                             return `${style},${branch},${subItem},${count},${globalTarget},${status}`;
                         })
                     )
-                    ).join("\n");
-
+                ).join("\n");
                 const encodedUri = encodeURI(csvContent);
                 const link = document.createElement("a");
                 link.setAttribute("href", encodedUri);
-                link.setAttribute("download", "citex_v2_progress.csv");
+                link.setAttribute("download", "citex_progress.csv");
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
             };
 
             const handleReset = () => {
-                if (confirm("Are you sure you want to reset all progress?")) {
+                if (confirm("Are you sure you want to reset all progress for this Project ID?")) {
                     const resetData = {};
                     STYLES.forEach(style => {
                         resetData[style] = {};
                         Object.keys(BRANCHES).forEach(branchName => {
                             resetData[style][branchName] = {};
-                            BRANCHES[branchName].items.forEach(item => {
-                                resetData[style][branchName][item] = 0;
-                            });
+                            BRANCHES[branchName].items.forEach(item => resetData[style][branchName][item] = 0);
                         });
                     });
                     setData(resetData);
+                    saveToCloud(resetData, globalTarget, dailyGoal);
                 }
             };
+
+            // -- Calculations --
+            const stats = useMemo(() => {
+                let totalTasks = 0, completedTasks = 0, totalQuestionsLogged = 0, totalQuestionsTarget = 0;
+
+                Object.keys(data).forEach(style => {
+                    Object.keys(data[style] || {}).forEach(branch => {
+                        Object.keys(data[style][branch] || {}).forEach(subCategory => {
+                            const count = data[style][branch][subCategory];
+                            totalTasks++;
+                            totalQuestionsLogged += count;
+                            totalQuestionsTarget += globalTarget;
+                            if (count >= globalTarget) completedTasks++;
+                        });
+                    });
+                });
+
+                const overallProgress = totalQuestionsTarget > 0 ? (totalQuestionsLogged / totalQuestionsTarget) * 100 : 0;
+                const remainingQuestions = Math.max(0, totalQuestionsTarget - totalQuestionsLogged);
+                const safeDailyGoal = Number(dailyGoal) > 0 ? Number(dailyGoal) : 1; 
+                const daysRemaining = Math.ceil(remainingQuestions / safeDailyGoal);
+                
+                const finishDate = new Date();
+                finishDate.setDate(finishDate.getDate() + daysRemaining);
+                const formattedDate = finishDate.toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+
+                return { totalTasks, completedTasks, totalQuestionsLogged, totalQuestionsTarget, overallProgress, remainingQuestions, daysRemaining, formattedDate };
+            }, [data, globalTarget, dailyGoal]);
+
 
             return (
                 <div className={`min-h-screen ${THEME.bg} font-sans text-slate-800 pb-20`}>
@@ -296,11 +378,14 @@
                                         </span>
                                         <span className="ml-2 text-xs bg-gray-200 px-2 py-1 rounded text-gray-600 font-semibold">TRACKER 2.0</span>
                                     </div>
+                                    <span className={`ml-4 text-xs font-medium transition-colors ${syncStatus === 'Saved' ? 'text-green-500' : isCloudSyncing ? 'text-blue-500 animate-pulse' : 'text-gray-400'}`}>
+                                        {syncStatus === 'Ready' ? '' : syncStatus}
+                                    </span>
                                 </div>
                                 <div className="flex items-center space-x-4">
                                     <button 
                                         onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-                                        className="p-2 rounded-full hover:bg-gray-100 text-gray-500 transition-colors"
+                                        className={`p-2 rounded-full hover:bg-gray-100 transition-colors ${isSettingsOpen ? 'bg-gray-100 text-pink-600' : 'text-gray-500'}`}
                                         title="Settings"
                                     >
                                         <Settings className="w-5 h-5" />
@@ -312,18 +397,52 @@
 
                     {/* Settings Panel */}
                     {isSettingsOpen && (
-                        <div className="bg-white border-b border-gray-200 p-4 shadow-inner animate-in slide-in-from-top-2">
-                            <div className="max-w-6xl mx-auto flex flex-col gap-6">
+                        <div className="bg-white border-b border-gray-200 p-6 shadow-inner animate-in slide-in-from-top-2">
+                            <div className="max-w-6xl mx-auto flex flex-col gap-8">
                                 
+                                {/* Cloud Sync Section */}
+                                <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
+                                    <h3 className="text-sm font-bold text-blue-800 uppercase flex items-center gap-2 mb-3">
+                                        <Cloud className="w-4 h-4" /> Cloud Synchronization
+                                    </h3>
+                                    <div className="flex flex-col md:flex-row gap-4 items-end md:items-center justify-between">
+                                        <div className="flex-1 w-full">
+                                            <p className="text-sm text-blue-600 mb-2">
+                                                To access this tracker on another device, enter this <strong>Project ID</strong> in the settings on that device.
+                                            </p>
+                                            <div className="flex gap-2">
+                                                <input 
+                                                    type="text" 
+                                                    value={projectId} 
+                                                    onChange={handleProjectIdChange}
+                                                    className="flex-1 p-2 font-mono text-sm border border-blue-200 rounded bg-white text-gray-600 focus:ring-2 focus:ring-blue-400 outline-none"
+                                                />
+                                                <button 
+                                                    onClick={() => {navigator.clipboard.writeText(projectId); alert('ID Copied!');}}
+                                                    className="p-2 bg-white border border-blue-200 rounded hover:bg-blue-100 text-blue-600"
+                                                    title="Copy ID"
+                                                >
+                                                    <Copy className="w-4 h-4" />
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <button 
+                                            onClick={generateNewProjectId}
+                                            className="text-xs text-blue-400 hover:text-blue-600 underline whitespace-nowrap"
+                                        >
+                                            Generate New ID
+                                        </button>
+                                    </div>
+                                </div>
+
                                 <div className="flex flex-col sm:flex-row gap-6 justify-between items-start sm:items-center">
-                                    {/* Target Settings */}
                                     <div className="flex gap-6 flex-wrap">
                                         <div className="flex flex-col gap-1">
                                             <label className="text-xs font-bold text-gray-500 uppercase">Target per Category</label>
                                             <input 
                                                 type="number" 
                                                 value={globalTarget} 
-                                                onChange={(e) => setGlobalTarget(Number(e.target.value))}
+                                                onChange={(e) => handleTargetChange(e.target.value)}
                                                 className="w-32 p-2 border rounded-md focus:ring-2 focus:ring-pink-500 outline-none"
                                                 placeholder="e.g. 50"
                                             />
@@ -341,7 +460,6 @@
                                         </div>
                                     </div>
 
-                                    {/* Action Buttons */}
                                     <div className="flex gap-3">
                                         <button 
                                             onClick={handleExport}
