@@ -143,9 +143,9 @@
             const [projectId, setProjectId] = useState(() => {
                 const params = new URLSearchParams(window.location.search);
                 const urlId = params.get('id');
-                if (urlId) return urlId;
+                if (urlId) return urlId.toLowerCase(); // Case-insensitive handling
                 const cached = localStorage.getItem('citex_project_id');
-                if (cached) return cached;
+                if (cached) return cached.toLowerCase(); // Case-insensitive handling
                 return null;
             });
 
@@ -312,7 +312,7 @@
             const handleLogin = (e) => {
                 e.preventDefault();
                 if (inputProjectId.trim().length > 0) {
-                    setProjectId(inputProjectId.trim());
+                    setProjectId(inputProjectId.trim().toLowerCase()); // Force lowercase ID
                 }
             };
 
