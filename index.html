@@ -33,13 +33,19 @@
 
     <script type="text/babel">
         const { useState, useEffect, useMemo, useCallback, useRef } = React;
-        const { createClient } = supabase;
-
+        
         // --- Supabase Configuration ---
+        // Using the credentials provided
         const SUPABASE_URL = 'https://hpyialendcqctvhsxqzb.supabase.co';
         const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhweWlhbGVuZGNxY3R2aHN4cXpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAwMzYxOTUsImV4cCI6MjA4NTYxMjE5NX0.ELSRI6W9XZDFq9wGO5OH2MbK1Pgv9v_7uyVPmQSfzMw';
 
-        const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        // Initialize Client safely
+        let supabaseClient = null;
+        if (window.supabase) {
+            supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        } else {
+            console.error("Supabase library not loaded");
+        }
 
         // --- Icons ---
         const Icon = ({ children, className }) => (
@@ -148,6 +154,8 @@
             // 1. Initial Load
             useEffect(() => {
                 const loadData = async () => {
+                    if (!supabaseClient) return;
+
                     setIsCloudSyncing(true);
                     setSyncStatus('Loading...');
                     try {
@@ -159,9 +167,9 @@
                         
                         if (error && error.code !== 'PGRST116') { // PGRST116 is "Row not found"
                             console.error('Error loading:', error);
-                        }
-
-                        if (remoteRow) {
+                            // If table doesn't exist or other error, fallback to local
+                            initializeDefaultData();
+                        } else if (remoteRow) {
                             if (remoteRow.data) setData(remoteRow.data);
                             if (remoteRow.global_target) setGlobalTarget(remoteRow.global_target);
                             if (remoteRow.daily_goal) setDailyGoal(remoteRow.daily_goal);
@@ -180,24 +188,27 @@
                 loadData();
 
                 // 2. Realtime Subscription
-                const channel = supabaseClient
-                    .channel('citex_realtime')
-                    .on(
-                        'postgres_changes',
-                        { event: '*', schema: 'public', table: 'citex_projects', filter: `project_id=eq.${projectId}` },
-                        (payload) => {
-                            if (payload.new) {
-                                const newData = payload.new;
-                                if (newData.data) setData(newData.data);
-                                if (newData.global_target) setGlobalTarget(newData.global_target);
-                                if (newData.daily_goal) setDailyGoal(newData.daily_goal);
+                let channel;
+                if (supabaseClient) {
+                    channel = supabaseClient
+                        .channel('citex_realtime')
+                        .on(
+                            'postgres_changes',
+                            { event: '*', schema: 'public', table: 'citex_projects', filter: `project_id=eq.${projectId}` },
+                            (payload) => {
+                                if (payload.new) {
+                                    const newData = payload.new;
+                                    if (newData.data) setData(newData.data);
+                                    if (newData.global_target) setGlobalTarget(newData.global_target);
+                                    if (newData.daily_goal) setDailyGoal(newData.daily_goal);
+                                }
                             }
-                        }
-                    )
-                    .subscribe();
+                        )
+                        .subscribe();
+                }
 
                 return () => {
-                    supabaseClient.removeChannel(channel);
+                    if (supabaseClient && channel) supabaseClient.removeChannel(channel);
                 }
 
             }, [projectId]);
@@ -229,6 +240,8 @@
 
             // 3. Save Function
             const saveToCloud = useCallback(async (newData, newTarget, newGoal) => {
+                if (!supabaseClient) return;
+
                 setSyncStatus('Saving...');
                 setIsCloudSyncing(true);
                 
