@@ -26,6 +26,15 @@
         .animate-pulse-slow { animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
         button, input, select { touch-action: manipulation; }
+        
+        /* Entrance Animation */
+        .fade-in-up {
+            animation: fadeInUp 0.5s ease-out forwards;
+        }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
 <body class="bg-[#F2F2F2]">
@@ -72,6 +81,7 @@
         const Copy = ({ className }) => <Icon className={className}><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></Icon>;
         const LinkIcon = ({ className }) => <Icon className={className}><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></Icon>;
         const QrCodeIcon = ({ className }) => <Icon className={className}><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></Icon>;
+        const LogIn = ({ className }) => <Icon className={className}><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></Icon>;
 
 
         // --- Constants ---
@@ -140,9 +150,12 @@
                 const cached = localStorage.getItem('citex_project_id');
                 if (cached) return cached;
 
-                // Priority 3: Generate New
-                return crypto.randomUUID();
+                // Priority 3: NONE. Do not generate random ID automatically.
+                // This forces the "Login" screen to appear if no ID is found.
+                return null;
             });
+
+            const [inputProjectId, setInputProjectId] = useState(""); // For the login screen input
             const [isCloudSyncing, setIsCloudSyncing] = useState(false);
             const [syncStatus, setSyncStatus] = useState('Idle');
 
@@ -160,18 +173,18 @@
 
             // Persist Project ID to LocalStorage AND URL
             useEffect(() => {
-                localStorage.setItem('citex_project_id', projectId);
-                
-                // Sync to URL so user can just copy the link to share/sync
-                // Wrapped in try/catch to prevent SecurityErrors in blob/preview environments
-                try {
-                    const url = new URL(window.location);
-                    if (url.searchParams.get('id') !== projectId) {
-                        url.searchParams.set('id', projectId);
-                        window.history.replaceState({}, '', url);
+                if (projectId) {
+                    localStorage.setItem('citex_project_id', projectId);
+                    
+                    try {
+                        const url = new URL(window.location);
+                        if (url.searchParams.get('id') !== projectId) {
+                            url.searchParams.set('id', projectId);
+                            window.history.replaceState({}, '', url);
+                        }
+                    } catch (e) {
+                        // Ignore preview environment security errors
                     }
-                } catch (e) {
-                    console.warn("Unable to update address bar URL (likely in a sandbox/preview). This is expected and harmless.", e);
                 }
             }, [projectId]);
 
@@ -179,6 +192,8 @@
             
             // 1. Initial Load
             useEffect(() => {
+                if (!projectId) return; // Don't load if no project ID
+
                 const loadData = async () => {
                     if (!supabaseClient) return;
 
@@ -200,7 +215,7 @@
                             if (remoteRow.global_target) setGlobalTarget(remoteRow.global_target);
                             if (remoteRow.daily_goal) setDailyGoal(remoteRow.daily_goal);
                         } else {
-                            // Initialize default if no cloud data
+                            // Initialize default if no cloud data (New Project with this ID)
                             initializeDefaultData();
                         }
                     } catch (err) {
@@ -240,13 +255,14 @@
             }, [projectId]);
 
             const initializeDefaultData = () => {
-                // Try legacy localstorage first
+                // Try legacy localstorage first (only if migrating from V2 local)
                 const legacyData = localStorage.getItem('citex_tracker_data_v2');
-                if (legacyData) {
+                if (legacyData && !localStorage.getItem('citex_project_id')) {
+                    // Only use legacy data if we just created a new project ID for the first time
                     try {
                         const parsed = JSON.parse(legacyData);
                         setData(parsed);
-                        saveToCloud(parsed, globalTarget, dailyGoal);
+                        if (projectId) saveToCloud(parsed, globalTarget, dailyGoal);
                         return;
                     } catch(e) {}
                 }
@@ -261,12 +277,11 @@
                     BRANCHES['In-text Citation'].items.forEach(item => initialData[style]['In-text Citation'][item] = 0);
                 });
                 setData(initialData);
-                // Don't auto-save blank on init to save DB calls, wait for user interaction
             };
 
             // 3. Save Function
             const saveToCloud = useCallback(async (newData, newTarget, newGoal) => {
-                if (!supabaseClient) return;
+                if (!supabaseClient || !projectId) return;
 
                 setSyncStatus('Saving...');
                 setIsCloudSyncing(true);
@@ -291,6 +306,25 @@
 
             // -- Handlers --
 
+            const handleLogin = (e) => {
+                e.preventDefault();
+                if (inputProjectId.trim().length > 0) {
+                    setProjectId(inputProjectId.trim());
+                }
+            };
+
+            const handleLogout = () => {
+                if(confirm("Log out? You will need to enter your Project ID again.")) {
+                    setProjectId(null);
+                    localStorage.removeItem('citex_project_id');
+                    try {
+                        const url = new URL(window.location);
+                        url.searchParams.delete('id');
+                        window.history.replaceState({}, '', url);
+                    } catch (e) {}
+                }
+            }
+
             const handleUpdateCount = (style, branch, subItem, value) => {
                 const newVal = Math.max(0, parseInt(value) || 0);
                 const newData = {
@@ -304,7 +338,6 @@
                     }
                 };
                 setData(newData);
-                // Debounce save? For now direct save is safer for user trust
                 saveToCloud(newData, globalTarget, dailyGoal);
             };
 
@@ -323,16 +356,6 @@
                     saveToCloud(data, globalTarget, cleanNum);
                 }
             };
-
-            const handleProjectIdChange = (e) => {
-                setProjectId(e.target.value);
-            };
-
-            const generateNewProjectId = () => {
-                if(confirm("Generate a new Project ID? This will switch to a blank or new tracker.")) {
-                    setProjectId(crypto.randomUUID());
-                }
-            }
 
             const toggleStyle = (style) => {
                 setExpandedStyles(prev => ({ ...prev, [style]: !prev[style] }));
@@ -357,21 +380,6 @@
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
-            };
-
-            const handleReset = () => {
-                if (confirm("Are you sure you want to reset all progress for this Project ID?")) {
-                    const resetData = {};
-                    STYLES.forEach(style => {
-                        resetData[style] = {};
-                        Object.keys(BRANCHES).forEach(branchName => {
-                            resetData[style][branchName] = {};
-                            BRANCHES[branchName].items.forEach(item => resetData[style][branchName][item] = 0);
-                        });
-                    });
-                    setData(resetData);
-                    saveToCloud(resetData, globalTarget, dailyGoal);
-                }
             };
 
             const copyShareLink = () => {
@@ -409,6 +417,48 @@
             }, [data, globalTarget, dailyGoal]);
 
 
+            // --- RENDER: LOGIN SCREEN IF NO PROJECT ID ---
+            if (!projectId) {
+                return (
+                    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+                        <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden fade-in-up">
+                            <div className="bg-pink-700 p-8 text-center">
+                                <h1 className="text-3xl font-bold tracking-widest text-white mb-2">
+                                    CIT<span className="text-pink-200">E</span>X
+                                </h1>
+                                <p className="text-pink-100 text-sm">Project Tracking System</p>
+                            </div>
+                            <div className="p-8">
+                                <form onSubmit={handleLogin} className="flex flex-col gap-4">
+                                    <div>
+                                        <label className="block text-sm font-bold text-gray-700 mb-2">Enter Project Name</label>
+                                        <input 
+                                            type="text" 
+                                            value={inputProjectId}
+                                            onChange={(e) => setInputProjectId(e.target.value)}
+                                            placeholder="e.g. ryan-citex"
+                                            className="w-full p-3 border-2 border-gray-200 rounded-lg text-lg focus:border-pink-600 focus:ring-0 outline-none transition-colors"
+                                            autoFocus
+                                        />
+                                        <p className="text-xs text-gray-500 mt-2">
+                                            Enter a custom name (like your name) to create a new tracker or load an existing one. Use this same name on all your devices.
+                                        </p>
+                                    </div>
+                                    <button 
+                                        type="submit"
+                                        disabled={!inputProjectId.trim()}
+                                        className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        <LogIn className="w-5 h-5" /> Start / Resume
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // --- RENDER: MAIN APP ---
             return (
                 <div className={`min-h-screen ${THEME.bg} font-sans text-slate-800 pb-20`}>
                     
@@ -421,9 +471,12 @@
                                         <span className="text-3xl font-bold tracking-widest text-slate-700">
                                             CIT<span className={THEME.primaryText}>E</span>X
                                         </span>
-                                        <span className="ml-2 text-xs bg-gray-200 px-2 py-1 rounded text-gray-600 font-semibold">TRACKER 2.0</span>
+                                        <div className="flex flex-col">
+                                            <span className="ml-2 text-xs bg-gray-200 px-2 py-0.5 rounded text-gray-600 font-semibold">TRACKER 2.0</span>
+                                            <span className="ml-2 text-[10px] text-gray-400 max-w-[100px] truncate" title={projectId}>{projectId}</span>
+                                        </div>
                                     </div>
-                                    <span className={`ml-4 text-xs font-medium transition-colors ${syncStatus === 'Saved' ? 'text-green-500' : isCloudSyncing ? 'text-blue-500 animate-pulse' : 'text-gray-400'}`}>
+                                    <span className={`hidden sm:inline-block ml-4 text-xs font-medium transition-colors ${syncStatus === 'Saved' ? 'text-green-500' : isCloudSyncing ? 'text-blue-500 animate-pulse' : 'text-gray-400'}`}>
                                         {syncStatus === 'Ready' ? '' : syncStatus}
                                     </span>
                                 </div>
@@ -452,27 +505,11 @@
                                     </h3>
                                     <div className="flex flex-col gap-4">
                                         <p className="text-sm text-blue-600">
-                                            To access this tracker on another device, use the <strong>Project ID</strong> or scan the QR code below.
+                                            Your data is synced to Project ID: <strong>{projectId}</strong>
                                         </p>
                                         
                                         <div className="flex flex-col md:flex-row gap-4 items-stretch md:items-start justify-between">
                                             <div className="flex-1 w-full space-y-3">
-                                                 <div className="flex gap-2">
-                                                    <input 
-                                                        type="text" 
-                                                        value={projectId} 
-                                                        onChange={handleProjectIdChange}
-                                                        className="flex-1 p-2 font-mono text-sm border border-blue-200 rounded bg-white text-gray-600 focus:ring-2 focus:ring-blue-400 outline-none"
-                                                    />
-                                                    <button 
-                                                        onClick={() => {navigator.clipboard.writeText(projectId); alert('Project ID Copied!');}}
-                                                        className="p-2 bg-white border border-blue-200 rounded hover:bg-blue-100 text-blue-600"
-                                                        title="Copy ID"
-                                                    >
-                                                        <Copy className="w-4 h-4" />
-                                                    </button>
-                                                </div>
-                                                
                                                 <div className="flex gap-2">
                                                     <button 
                                                         onClick={copyShareLink}
@@ -502,10 +539,10 @@
                                             </div>
 
                                             <button 
-                                                onClick={generateNewProjectId}
-                                                className="text-xs text-blue-400 hover:text-blue-600 underline whitespace-nowrap self-end md:self-start mt-2 md:mt-0"
+                                                onClick={handleLogout}
+                                                className="text-xs text-red-400 hover:text-red-600 underline whitespace-nowrap self-end md:self-start mt-2 md:mt-0"
                                             >
-                                                Generate New ID
+                                                Log Out / Switch Project
                                             </button>
                                         </div>
                                     </div>
@@ -542,12 +579,6 @@
                                             className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-md hover:bg-slate-700 transition"
                                         >
                                             <Download className="w-4 h-4" /> Export CSV
-                                        </button>
-                                        <button 
-                                            onClick={handleReset}
-                                            className="flex items-center gap-2 px-4 py-2 text-red-600 border border-red-200 bg-red-50 rounded-md hover:bg-red-100 transition"
-                                        >
-                                            <Trash2 className="w-4 h-4" /> Reset Data
                                         </button>
                                     </div>
                                 </div>
