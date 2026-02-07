@@ -82,6 +82,8 @@
         const LinkIcon = ({ className }) => <Icon className={className}><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></Icon>;
         const QrCodeIcon = ({ className }) => <Icon className={className}><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></Icon>;
         const LogIn = ({ className }) => <Icon className={className}><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></Icon>;
+        const GripVertical = ({ className }) => <Icon className={className}><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></Icon>;
+        const ListChecks = ({ className }) => <Icon className={className}><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></Icon>;
 
 
         // --- Constants ---
@@ -99,6 +101,11 @@
                 items: ['Single Author', 'Two Authors', 'Three Authors', 'More Than Three Authors'],
                 itemIcon: Users
             }
+        };
+
+        const QUESTION_TYPES = {
+            'Drag & Drop': { icon: GripVertical, short: 'D&D' },
+            'MCQ': { icon: ListChecks, short: 'MCQ' }
         };
 
         const DEFAULT_TARGET = 50;
@@ -143,9 +150,9 @@
             const [projectId, setProjectId] = useState(() => {
                 const params = new URLSearchParams(window.location.search);
                 const urlId = params.get('id');
-                if (urlId) return urlId.toLowerCase(); // Case-insensitive handling
+                if (urlId) return urlId.toLowerCase(); 
                 const cached = localStorage.getItem('citex_project_id');
-                if (cached) return cached.toLowerCase(); // Case-insensitive handling
+                if (cached) return cached.toLowerCase();
                 return null;
             });
 
@@ -183,6 +190,30 @@
                 }
             }, [projectId]);
 
+            // --- Helper: Data Migration ---
+            const migrateDataStructure = (rawData) => {
+                const newData = JSON.parse(JSON.stringify(rawData)); // Deep copy
+                
+                Object.keys(newData).forEach(style => {
+                    Object.keys(newData[style] || {}).forEach(branch => {
+                        Object.keys(newData[style][branch] || {}).forEach(item => {
+                            const val = newData[style][branch][item];
+                            if (typeof val === 'number') {
+                                newData[style][branch][item] = {
+                                    'Drag & Drop': 0,
+                                    'MCQ': val,
+                                    'target': undefined 
+                                };
+                            } else if (typeof val === 'object' && val !== null) {
+                                if (val['Drag & Drop'] === undefined) val['Drag & Drop'] = 0;
+                                if (val['MCQ'] === undefined) val['MCQ'] = 0;
+                            }
+                        });
+                    });
+                });
+                return newData;
+            };
+
             // --- Database Sync (Supabase) ---
             
             // 1. Initial Load
@@ -205,7 +236,8 @@
                             console.error('Error loading:', error);
                             initializeDefaultData();
                         } else if (remoteRow) {
-                            if (remoteRow.data) setData(remoteRow.data);
+                            const migratedData = migrateDataStructure(remoteRow.data || {});
+                            setData(migratedData);
                             if (remoteRow.global_target) setGlobalTarget(remoteRow.global_target);
                             if (remoteRow.daily_goal) setDailyGoal(remoteRow.daily_goal);
                         } else {
@@ -230,15 +262,13 @@
                             'postgres_changes',
                             { event: '*', schema: 'public', table: 'citex_projects', filter: `project_id=eq.${projectId}` },
                             (payload) => {
-                                // IMPORTANT: Ignore update if user edited locally in last 2 seconds
                                 if (Date.now() - lastLocalEdit.current < 2000) {
-                                    console.log("Ignoring update due to local activity");
                                     return;
                                 }
 
                                 if (payload.new) {
                                     const newData = payload.new;
-                                    if (newData.data) setData(newData.data);
+                                    if (newData.data) setData(migrateDataStructure(newData.data));
                                     if (newData.global_target) setGlobalTarget(newData.global_target);
                                     if (newData.daily_goal) setDailyGoal(newData.daily_goal);
                                 }
@@ -258,8 +288,9 @@
                 if (legacyData && !localStorage.getItem('citex_project_id')) {
                     try {
                         const parsed = JSON.parse(legacyData);
-                        setData(parsed);
-                        if (projectId) saveToCloud(parsed, globalTarget, dailyGoal);
+                        const migrated = migrateDataStructure(parsed);
+                        setData(migrated);
+                        if (projectId) saveToCloud(migrated, globalTarget, dailyGoal);
                         return;
                     } catch(e) {}
                 }
@@ -268,14 +299,18 @@
                 STYLES.forEach(style => {
                     initialData[style] = {};
                     initialData[style]['Reference List'] = {};
-                    BRANCHES['Reference List'].items.forEach(item => initialData[style]['Reference List'][item] = 0);
+                    BRANCHES['Reference List'].items.forEach(item => {
+                        initialData[style]['Reference List'][item] = { 'Drag & Drop': 0, 'MCQ': 0 };
+                    });
                     initialData[style]['In-text Citation'] = {};
-                    BRANCHES['In-text Citation'].items.forEach(item => initialData[style]['In-text Citation'][item] = 0);
+                    BRANCHES['In-text Citation'].items.forEach(item => {
+                        initialData[style]['In-text Citation'][item] = { 'Drag & Drop': 0, 'MCQ': 0 };
+                    });
                 });
                 setData(initialData);
             };
 
-            // 3. Save Function (Directly calls API)
+            // 3. Save Function
             const performSave = useCallback(async (newData, newTarget, newGoal) => {
                 if (!supabaseClient || !projectId) return;
 
@@ -296,14 +331,13 @@
                 setTimeout(() => setSyncStatus('Ready'), 2000);
             }, [projectId]);
 
-            // Debounced Wrapper for Save
             const debouncedSave = useCallback((d, t, g) => {
                 if (saveTimeout.current) clearTimeout(saveTimeout.current);
                 setSyncStatus('Typing...');
                 setIsCloudSyncing(true);
                 saveTimeout.current = setTimeout(() => {
                     performSave(d, t, g);
-                }, 500); // 500ms debounce
+                }, 500); 
             }, [performSave]);
 
 
@@ -312,7 +346,7 @@
             const handleLogin = (e) => {
                 e.preventDefault();
                 if (inputProjectId.trim().length > 0) {
-                    setProjectId(inputProjectId.trim().toLowerCase()); // Force lowercase ID
+                    setProjectId(inputProjectId.trim().toLowerCase()); 
                 }
             };
 
@@ -328,25 +362,35 @@
                 }
             }
 
-            const handleUpdateCount = (style, branch, subItem, value) => {
-                lastLocalEdit.current = Date.now(); // Mark local edit time
-                
+            const handleUpdateCount = (style, branch, subItem, type, value) => {
+                lastLocalEdit.current = Date.now();
                 const newVal = Math.max(0, parseInt(value) || 0);
-                const newData = {
-                    ...data,
-                    [style]: {
-                        ...data[style],
-                        [branch]: {
-                            ...data[style][branch],
-                            [subItem]: newVal
-                        }
-                    }
-                };
+                const newData = JSON.parse(JSON.stringify(data));
                 
-                // Update Local UI instantly
+                if (!newData[style][branch][subItem] || typeof newData[style][branch][subItem] !== 'object') {
+                    newData[style][branch][subItem] = { 'Drag & Drop': 0, 'MCQ': 0 };
+                }
+
+                newData[style][branch][subItem][type] = newVal;
                 setData(newData);
+                debouncedSave(newData, globalTarget, dailyGoal);
+            };
+
+            const handleUpdateItemTarget = (style, branch, subItem, value) => {
+                lastLocalEdit.current = Date.now();
+                const val = parseInt(value);
+                // Allow user to clear (NaN) temporarily but store as 0 or number
+                // If they clear it, maybe they want to revert to default? 
+                // For simplicity, we just store the number. If invalid, store 0.
+                const newTarget = (isNaN(val) || val < 0) ? 0 : val;
                 
-                // Queue Cloud Save
+                const newData = JSON.parse(JSON.stringify(data));
+                if (!newData[style][branch][subItem] || typeof newData[style][branch][subItem] !== 'object') {
+                    newData[style][branch][subItem] = { 'Drag & Drop': 0, 'MCQ': 0 };
+                }
+                
+                newData[style][branch][subItem].target = newTarget;
+                setData(newData);
                 debouncedSave(newData, globalTarget, dailyGoal);
             };
 
@@ -374,13 +418,22 @@
 
             const handleExport = () => {
                 const csvContent = "data:text/csv;charset=utf-8," 
-                + "Style,Main Category,Sub Category,Current,Target,Status\n"
+                + "Style,Main Category,Sub Category,Type,Count,Target,Status\n"
                 + Object.keys(data).flatMap(style => 
                     Object.keys(data[style]).flatMap(branch => 
-                        Object.keys(data[style][branch]).map(subItem => {
-                            const count = data[style][branch][subItem];
-                            const status = count >= globalTarget ? "Completed" : "In Progress";
-                            return `${style},${branch},${subItem},${count},${globalTarget},${status}`;
+                        Object.keys(data[style][branch]).flatMap(subItem => {
+                            const counts = data[style][branch][subItem];
+                            if (typeof counts === 'number') return []; 
+                            
+                            const total = (counts['Drag & Drop'] || 0) + (counts['MCQ'] || 0);
+                            const itemTarget = counts.target !== undefined ? counts.target : globalTarget;
+                            const status = total >= itemTarget ? "Completed" : "In Progress";
+
+                            return Object.keys(counts)
+                                .filter(k => k !== 'target')
+                                .map(type => {
+                                    return `${style},${branch},${subItem},${type},${counts[type]},${itemTarget},${status}`;
+                                });
                         })
                     )
                 ).join("\n");
@@ -406,11 +459,21 @@
                 Object.keys(data).forEach(style => {
                     Object.keys(data[style] || {}).forEach(branch => {
                         Object.keys(data[style][branch] || {}).forEach(subCategory => {
-                            const count = data[style][branch][subCategory];
+                            const val = data[style][branch][subCategory];
+                            let count = 0;
+                            let currentTarget = globalTarget;
+
+                            if (typeof val === 'number') {
+                                count = val;
+                            } else {
+                                count = (val['Drag & Drop'] || 0) + (val['MCQ'] || 0);
+                                if (val.target !== undefined) currentTarget = val.target;
+                            }
+
                             totalTasks++;
                             totalQuestionsLogged += count;
-                            totalQuestionsTarget += globalTarget;
-                            if (count >= globalTarget) completedTasks++;
+                            totalQuestionsTarget += currentTarget;
+                            if (count >= currentTarget) completedTasks++;
                         });
                     });
                 });
@@ -428,7 +491,7 @@
             }, [data, globalTarget, dailyGoal]);
 
 
-            // --- RENDER: LOGIN SCREEN IF NO PROJECT ID ---
+            // --- RENDER: LOGIN SCREEN ---
             if (!projectId) {
                 return (
                     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
@@ -508,8 +571,6 @@
                     {isSettingsOpen && (
                         <div className="bg-white border-b border-gray-200 p-6 shadow-inner animate-in slide-in-from-top-2">
                             <div className="max-w-6xl mx-auto flex flex-col gap-8">
-                                
-                                {/* Cloud Sync Section */}
                                 <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
                                     <h3 className="text-sm font-bold text-blue-800 uppercase flex items-center gap-2 mb-3">
                                         <Cloud className="w-4 h-4" /> Cloud Synchronization
@@ -518,79 +579,36 @@
                                         <p className="text-sm text-blue-600">
                                             Your data is synced to Project ID: <strong>{projectId}</strong>
                                         </p>
-                                        
                                         <div className="flex flex-col md:flex-row gap-4 items-stretch md:items-start justify-between">
                                             <div className="flex-1 w-full space-y-3">
                                                 <div className="flex gap-2">
-                                                    <button 
-                                                        onClick={copyShareLink}
-                                                        className="flex-1 flex items-center justify-center gap-2 p-2 bg-blue-100 hover:bg-blue-200 text-blue-800 rounded text-sm font-medium transition-colors"
-                                                    >
-                                                        <LinkIcon className="w-4 h-4" /> Copy Link
-                                                    </button>
-                                                    <button 
-                                                        onClick={() => setShowQr(!showQr)}
-                                                        className={`flex items-center justify-center gap-2 p-2 rounded text-sm font-medium transition-colors ${showQr ? 'bg-blue-600 text-white' : 'bg-white border border-blue-200 text-blue-600 hover:bg-blue-50'}`}
-                                                    >
-                                                        <QrCodeIcon className="w-4 h-4" /> {showQr ? 'Hide QR' : 'Show QR'}
-                                                    </button>
+                                                    <button onClick={copyShareLink} className="flex-1 flex items-center justify-center gap-2 p-2 bg-blue-100 hover:bg-blue-200 text-blue-800 rounded text-sm font-medium transition-colors"><LinkIcon className="w-4 h-4" /> Copy Link</button>
+                                                    <button onClick={() => setShowQr(!showQr)} className={`flex items-center justify-center gap-2 p-2 rounded text-sm font-medium transition-colors ${showQr ? 'bg-blue-600 text-white' : 'bg-white border border-blue-200 text-blue-600 hover:bg-blue-50'}`}><QrCodeIcon className="w-4 h-4" /> {showQr ? 'Hide QR' : 'Show QR'}</button>
                                                 </div>
-
-                                                {/* QR Code Display */}
                                                 {showQr && (
                                                     <div className="mt-4 p-4 bg-white border border-gray-200 rounded-lg flex flex-col items-center justify-center animate-in fade-in zoom-in duration-200">
-                                                        <img 
-                                                            src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(window.location.href.split('?')[0] + '?id=' + projectId)}`} 
-                                                            alt="Sync QR Code"
-                                                            className="w-48 h-48"
-                                                        />
+                                                        <img src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(window.location.href.split('?')[0] + '?id=' + projectId)}`} alt="Sync QR Code" className="w-48 h-48" />
                                                         <p className="text-xs text-gray-400 mt-2">Scan to open on mobile</p>
                                                     </div>
                                                 )}
                                             </div>
-
-                                            <button 
-                                                onClick={handleLogout}
-                                                className="text-xs text-red-400 hover:text-red-600 underline whitespace-nowrap self-end md:self-start mt-2 md:mt-0"
-                                            >
-                                                Log Out / Switch Project
-                                            </button>
+                                            <button onClick={handleLogout} className="text-xs text-red-400 hover:text-red-600 underline whitespace-nowrap self-end md:self-start mt-2 md:mt-0">Log Out / Switch Project</button>
                                         </div>
                                     </div>
                                 </div>
-
                                 <div className="flex flex-col sm:flex-row gap-6 justify-between items-start sm:items-center">
                                     <div className="flex gap-6 flex-wrap">
                                         <div className="flex flex-col gap-1">
-                                            <label className="text-xs font-bold text-gray-500 uppercase">Target per Category</label>
-                                            <input 
-                                                type="number" 
-                                                value={globalTarget} 
-                                                onChange={(e) => handleTargetChange(e.target.value)}
-                                                className="w-32 p-2 border rounded-md focus:ring-2 focus:ring-pink-500 outline-none"
-                                                placeholder="e.g. 50"
-                                            />
+                                            <label className="text-xs font-bold text-gray-500 uppercase">Default Target</label>
+                                            <input type="number" value={globalTarget || ''} onChange={(e) => handleTargetChange(e.target.value)} className="w-32 p-2 border rounded-md focus:ring-2 focus:ring-pink-500 outline-none" placeholder="e.g. 50" />
                                         </div>
-                                        
                                         <div className="flex flex-col gap-1">
                                             <label className="text-xs font-bold text-gray-500 uppercase">Daily Goal (Qs/day)</label>
-                                            <input 
-                                                type="number" 
-                                                value={dailyGoal} 
-                                                onChange={(e) => handleDailyGoalChange(e.target.value)}
-                                                className="w-32 p-2 border rounded-md focus:ring-2 focus:ring-pink-500 outline-none"
-                                                placeholder="e.g. 100"
-                                            />
+                                            <input type="number" value={dailyGoal || ''} onChange={(e) => handleDailyGoalChange(e.target.value)} className="w-32 p-2 border rounded-md focus:ring-2 focus:ring-pink-500 outline-none" placeholder="e.g. 100" />
                                         </div>
                                     </div>
-
                                     <div className="flex gap-3">
-                                        <button 
-                                            onClick={handleExport}
-                                            className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-md hover:bg-slate-700 transition"
-                                        >
-                                            <Download className="w-4 h-4" /> Export CSV
-                                        </button>
+                                        <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-md hover:bg-slate-700 transition"><Download className="w-4 h-4" /> Export CSV</button>
                                     </div>
                                 </div>
                             </div>
@@ -599,109 +617,42 @@
 
                     {/* Main Content */}
                     <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                        
-                        {/* Project Projection Section */}
+                        {/* Stats Projection */}
                         <div className="bg-gradient-to-r from-slate-800 to-slate-900 rounded-xl shadow-md p-6 mb-8 text-white relative overflow-hidden">
-                            <div className="absolute top-0 right-0 p-4 opacity-10">
-                                <Target className="w-32 h-32 text-white" />
-                            </div>
-                            
+                            <div className="absolute top-0 right-0 p-4 opacity-10"><Target className="w-32 h-32 text-white" /></div>
                             <div className="relative z-10">
                                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-                                    <div>
-                                        <h2 className="text-xl font-bold flex items-center gap-2">
-                                            <Calendar className="w-5 h-5 text-pink-400" /> Deadline Calculator
-                                        </h2>
-                                        <p className="text-slate-400 text-sm mt-1">Adjust your daily target to see when you'll finish.</p>
-                                    </div>
-
-                                    <div className="flex items-center gap-4 bg-white/10 p-3 rounded-lg border border-white/10">
-                                        <div className="text-right">
-                                            <label className="block text-xs text-slate-400 uppercase font-bold">Daily Goal</label>
-                                            <div className="flex items-center gap-2 justify-end">
-                                                <input 
-                                                    type="number" 
-                                                    value={dailyGoal}
-                                                    onChange={(e) => handleDailyGoalChange(e.target.value)}
-                                                    className="w-20 bg-transparent text-2xl font-bold text-white text-right outline-none border-b border-pink-500 focus:border-white transition-colors"
-                                                />
-                                                <span className="text-sm text-slate-300">Qs/day</span>
-                                            </div>
-                                        </div>
-                                    </div>
+                                    <div><h2 className="text-xl font-bold flex items-center gap-2"><Calendar className="w-5 h-5 text-pink-400" /> Deadline Calculator</h2><p className="text-slate-400 text-sm mt-1">Adjust your daily target to see when you'll finish.</p></div>
+                                    <div className="flex items-center gap-4 bg-white/10 p-3 rounded-lg border border-white/10"><div className="text-right"><label className="block text-xs text-slate-400 uppercase font-bold">Daily Goal</label><div className="flex items-center gap-2 justify-end"><input type="number" value={dailyGoal || ''} onChange={(e) => handleDailyGoalChange(e.target.value)} className="w-20 bg-transparent text-2xl font-bold text-white text-right outline-none border-b border-pink-500 focus:border-white transition-colors" /><span className="text-sm text-slate-300">Qs/day</span></div></div></div>
                                 </div>
-
                                 <div className="mt-6 pt-6 border-t border-white/10 grid grid-cols-1 md:grid-cols-3 gap-6">
-                                    <div>
-                                        <span className="block text-xs text-slate-400 uppercase mb-1">Total Remaining</span>
-                                        <span className="text-2xl font-bold text-pink-400">{stats.remainingQuestions}</span>
-                                        <span className="text-sm text-slate-500 ml-2">Questions</span>
-                                    </div>
-                                    <div>
-                                        <span className="block text-xs text-slate-400 uppercase mb-1">Days of Work</span>
-                                        <span className="text-2xl font-bold text-white">{stats.daysRemaining}</span>
-                                        <span className="text-sm text-slate-500 ml-2">Days</span>
-                                    </div>
-                                    <div>
-                                        <span className="block text-xs text-slate-400 uppercase mb-1">Projected Finish</span>
-                                        <span className="text-2xl font-bold text-green-400">{stats.formattedDate}</span>
-                                    </div>
+                                    <div><span className="block text-xs text-slate-400 uppercase mb-1">Total Remaining</span><span className="text-2xl font-bold text-pink-400">{stats.remainingQuestions}</span><span className="text-sm text-slate-500 ml-2">Questions</span></div>
+                                    <div><span className="block text-xs text-slate-400 uppercase mb-1">Days of Work</span><span className="text-2xl font-bold text-white">{stats.daysRemaining}</span><span className="text-sm text-slate-500 ml-2">Days</span></div>
+                                    <div><span className="block text-xs text-slate-400 uppercase mb-1">Projected Finish</span><span className="text-2xl font-bold text-green-400">{stats.formattedDate}</span></div>
                                 </div>
                             </div>
                         </div>
 
                         {/* Stats Grid */}
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                            <StatCard 
-                                title="Total Progress" 
-                                value={`${stats.overallProgress.toFixed(1)}%`} 
-                                subtext={`${stats.totalQuestionsLogged} / ${stats.totalQuestionsTarget} Done`}
-                                icon={PieChart}
-                            />
-                            <StatCard 
-                                title="Completed Categories" 
-                                value={`${stats.completedTasks} / ${stats.totalTasks}`} 
-                                subtext="Fully populated categories"
-                                icon={CheckCircle2}
-                            />
-                            <StatCard 
-                                title="Active Styles" 
-                                value={STYLES.length} 
-                                subtext="Citation formats"
-                                icon={BookOpen}
-                            />
-                            <StatCard 
-                                title="Remaining Work" 
-                                value={stats.remainingQuestions} 
-                                subtext="Total questions left"
-                                icon={FileText}
-                                highlight={true}
-                            />
+                            <StatCard title="Total Progress" value={`${stats.overallProgress.toFixed(1)}%`} subtext={`${stats.totalQuestionsLogged} / ${stats.totalQuestionsTarget} Done`} icon={PieChart} />
+                            <StatCard title="Completed Categories" value={`${stats.completedTasks} / ${stats.totalTasks}`} subtext="Fully populated categories" icon={CheckCircle2} />
+                            <StatCard title="Active Styles" value={STYLES.length} subtext="Citation formats" icon={BookOpen} />
+                            <StatCard title="Remaining Work" value={stats.remainingQuestions} subtext="Total questions left" icon={FileText} highlight={true} />
                         </div>
 
                         {/* Filters */}
                         <div className="flex flex-col sm:flex-row justify-between items-center mb-6 gap-4">
                             <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto pb-2 sm:pb-0">
                                 <Filter className="w-5 h-5 text-gray-400" />
-                                <select 
-                                    value={filterStyle} 
-                                    onChange={(e) => setFilterStyle(e.target.value)}
-                                    className="p-2 border rounded-md bg-white text-sm focus:outline-none focus:ring-2 focus:ring-pink-500"
-                                >
+                                <select value={filterStyle} onChange={(e) => setFilterStyle(e.target.value)} className="p-2 border rounded-md bg-white text-sm focus:outline-none focus:ring-2 focus:ring-pink-500">
                                     <option value="All">All Styles</option>
                                     {STYLES.map(s => <option key={s} value={s}>{s}</option>)}
                                 </select>
                             </div>
-                            
                             <div className="flex items-center gap-2">
                                 <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
-                                    <input 
-                                        type="checkbox" 
-                                        checked={showCompleted} 
-                                        onChange={(e) => setShowCompleted(e.target.checked)}
-                                        className="rounded text-pink-600 focus:ring-pink-500"
-                                    />
-                                    Show Completed
+                                    <input type="checkbox" checked={showCompleted} onChange={(e) => setShowCompleted(e.target.checked)} className="rounded text-pink-600 focus:ring-pink-500" /> Show Completed
                                 </label>
                             </div>
                         </div>
@@ -712,48 +663,41 @@
                                 .filter(style => filterStyle === 'All' || filterStyle === style)
                                 .map(style => {
                                     const styleData = data[style] || {};
-                                    // Calculate style specific progress
+                                    // Style Progress Calc
                                     let styleTotal = 0;
                                     let styleCurrent = 0;
                                     
                                     if (styleData['Reference List']) {
-                                        Object.values(styleData['Reference List']).forEach(v => { styleTotal += globalTarget; styleCurrent += v; });
-                                        Object.values(styleData['In-text Citation']).forEach(v => { styleTotal += globalTarget; styleCurrent += v; });
+                                        Object.values(styleData['Reference List']).forEach(v => { 
+                                            // Handle number (old data) vs object (new data)
+                                            const itemTarget = (typeof v === 'object' && v.target !== undefined) ? v.target : globalTarget;
+                                            styleTotal += itemTarget; 
+                                            styleCurrent += (typeof v === 'number' ? v : (v['Drag & Drop']||0) + (v['MCQ']||0)); 
+                                        });
+                                        Object.values(styleData['In-text Citation']).forEach(v => { 
+                                            const itemTarget = (typeof v === 'object' && v.target !== undefined) ? v.target : globalTarget;
+                                            styleTotal += itemTarget; 
+                                            styleCurrent += (typeof v === 'number' ? v : (v['Drag & Drop']||0) + (v['MCQ']||0)); 
+                                        });
                                     }
                                     
                                     const isStyleExpanded = expandedStyles[style];
 
                                     return (
                                         <div key={style} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                                            {/* Style Header */}
-                                            <div 
-                                                onClick={() => toggleStyle(style)}
-                                                className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50 transition-colors"
-                                            >
+                                            <div onClick={() => toggleStyle(style)} className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50 transition-colors">
                                                 <div className="flex items-center gap-4 flex-1">
-                                                    <div className={`w-12 h-12 rounded-lg ${THEME.primary} text-white font-bold flex items-center justify-center text-lg shadow-sm`}>
-                                                        {style.substring(0, 1)}
-                                                    </div>
-                                                    <div className="flex-1">
-                                                        <h2 className="text-lg font-bold text-gray-800">{style}</h2>
-                                                        <div className="w-full sm:w-64">
-                                                            <ProgressBar current={styleCurrent} total={styleTotal} />
-                                                        </div>
-                                                    </div>
+                                                    <div className={`w-12 h-12 rounded-lg ${THEME.primary} text-white font-bold flex items-center justify-center text-lg shadow-sm`}>{style.substring(0, 1)}</div>
+                                                    <div className="flex-1"><h2 className="text-lg font-bold text-gray-800">{style}</h2><div className="w-full sm:w-64"><ProgressBar current={styleCurrent} total={styleTotal} /></div></div>
                                                 </div>
                                                 <div className="flex items-center gap-4">
-                                                    <span className="text-sm font-medium text-gray-500 hidden sm:block">
-                                                        {styleCurrent} / {styleTotal}
-                                                    </span>
+                                                    <span className="text-sm font-medium text-gray-500 hidden sm:block">{styleCurrent} / {styleTotal}</span>
                                                     {isStyleExpanded ? <ChevronDown className="text-gray-400" /> : <ChevronRight className="text-gray-400" />}
                                                 </div>
                                             </div>
 
-                                            {/* Expanded Content: The Two Main Branches */}
                                             {isStyleExpanded && (
                                                 <div className="border-t border-gray-100 bg-gray-50 p-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
-                                                    
-                                                    {/* Loop through Branches (Reference List & In-text) */}
                                                     {Object.keys(BRANCHES).map(branchName => {
                                                         const branchConfig = BRANCHES[branchName];
                                                         const BranchIcon = branchConfig.icon;
@@ -762,62 +706,85 @@
 
                                                         return (
                                                             <div key={branchName} className="bg-white rounded-lg border border-gray-200 shadow-sm flex flex-col">
-                                                                {/* Branch Header */}
                                                                 <div className="p-3 border-b border-gray-100 flex items-center gap-3 bg-slate-50 rounded-t-lg">
-                                                                    <div className={`p-2 rounded-md ${branchName === 'Reference List' ? 'bg-pink-100 text-pink-700' : 'bg-slate-200 text-slate-700'}`}>
-                                                                        <BranchIcon className="w-5 h-5" />
-                                                                    </div>
+                                                                    <div className={`p-2 rounded-md ${branchName === 'Reference List' ? 'bg-pink-100 text-pink-700' : 'bg-slate-200 text-slate-700'}`}><BranchIcon className="w-5 h-5" /></div>
                                                                     <h3 className="font-semibold text-gray-700">{branchName}</h3>
                                                                 </div>
 
-                                                                {/* Branch Items Inputs */}
                                                                 <div className="p-4 space-y-4 flex-1">
                                                                     {branchConfig.items.map(item => {
-                                                                        const currentCount = branchData[item] || 0;
-                                                                        const isComplete = currentCount >= globalTarget;
+                                                                        const rawCounts = branchData[item] || 0;
+                                                                        const counts = typeof rawCounts === 'number' ? { 'Drag & Drop': 0, 'MCQ': rawCounts } : rawCounts;
+                                                                        
+                                                                        const currentCount = (counts['Drag & Drop'] || 0) + (counts['MCQ'] || 0);
+                                                                        const itemTarget = counts.target !== undefined ? counts.target : globalTarget;
+                                                                        const isComplete = currentCount >= itemTarget;
 
                                                                         if (!showCompleted && isComplete) return null;
 
                                                                         return (
-                                                                            <div key={item} className="flex items-center justify-between group">
-                                                                                <div className="flex items-center gap-3 flex-1">
-                                                                                    <SubItemIcon className={`w-4 h-4 ${isComplete ? 'text-green-500' : 'text-gray-400'}`} />
-                                                                                    <span className={`text-sm ${isComplete ? 'text-gray-400 line-through' : 'text-gray-700 font-medium'}`}>
-                                                                                        {item}
-                                                                                    </span>
+                                                                            <div key={item} className="flex flex-col bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                                                                {/* Header Row with Editable Target */}
+                                                                                <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-200">
+                                                                                    <div className="flex items-center gap-2">
+                                                                                        <SubItemIcon className={`w-4 h-4 ${isComplete ? 'text-green-500' : 'text-gray-500'}`} />
+                                                                                        <span className={`font-medium text-sm ${isComplete ? 'text-green-700' : 'text-gray-700'}`}>{item}</span>
+                                                                                    </div>
+                                                                                    <div className="flex items-center gap-2 bg-white px-2 py-1 rounded border border-gray-200 hover:border-pink-300 transition-colors">
+                                                                                        <span className="text-xs font-bold text-gray-500">{currentCount}</span>
+                                                                                        <span className="text-gray-300">/</span>
+                                                                                        <input 
+                                                                                            type="number"
+                                                                                            min="1"
+                                                                                            value={itemTarget || ''}
+                                                                                            onChange={(e) => handleUpdateItemTarget(style, branchName, item, e.target.value)}
+                                                                                            className="w-10 text-xs font-bold text-gray-500 text-center outline-none border-b border-transparent focus:border-pink-300 bg-transparent transition-colors p-0"
+                                                                                            onClick={(e) => e.stopPropagation()}
+                                                                                        />
+                                                                                    </div>
                                                                                 </div>
 
-                                                                                <div className="flex items-center gap-2">
-                                                                                    <input 
-                                                                                        type="number"
-                                                                                        min="0"
-                                                                                        value={currentCount}
-                                                                                        onChange={(e) => handleUpdateCount(style, branchName, item, e.target.value)}
-                                                                                        className={`w-20 p-1 px-2 border rounded-md text-sm text-right outline-none transition-all ${
-                                                                                            isComplete 
-                                                                                                ? 'border-green-200 bg-green-50 text-green-700 font-bold' 
-                                                                                                : 'border-gray-200 focus:border-pink-500 focus:ring-1 focus:ring-pink-500'
-                                                                                        }`}
-                                                                                    />
-                                                                                    <span className="text-xs text-gray-400 w-8">
-                                                                                        / {globalTarget}
-                                                                                    </span>
+                                                                                {/* Inputs Row */}
+                                                                                <div className="flex gap-4">
+                                                                                    {Object.keys(QUESTION_TYPES).map(qType => {
+                                                                                        const QIcon = QUESTION_TYPES[qType].icon;
+                                                                                        const qValue = counts[qType] || 0;
+                                                                                        return (
+                                                                                            <div key={qType} className="flex-1">
+                                                                                                <label className="text-[10px] uppercase font-bold text-gray-400 mb-1 flex items-center gap-1">
+                                                                                                    <QIcon className="w-3 h-3" /> {QUESTION_TYPES[qType].short}
+                                                                                                </label>
+                                                                                                <input 
+                                                                                                    type="number"
+                                                                                                    min="0"
+                                                                                                    value={qValue || ''}
+                                                                                                    onChange={(e) => handleUpdateCount(style, branchName, item, qType, e.target.value)}
+                                                                                                    className={`w-full p-1.5 border rounded text-sm text-center outline-none transition-all ${
+                                                                                                        isComplete 
+                                                                                                            ? 'border-green-200 bg-green-50 text-green-700' 
+                                                                                                            : 'border-gray-300 focus:border-pink-500 focus:ring-1 focus:ring-pink-500 bg-white'
+                                                                                                    }`}
+                                                                                                />
+                                                                                            </div>
+                                                                                        )
+                                                                                    })}
                                                                                 </div>
                                                                             </div>
                                                                         );
                                                                     })}
                                                                     
-                                                                    {/* Empty State if all hidden */}
-                                                                    {!showCompleted && branchConfig.items.every(i => (branchData[i] || 0) >= globalTarget) && (
-                                                                        <div className="text-center py-4 text-sm text-gray-400 italic">
-                                                                            All complete!
-                                                                        </div>
+                                                                    {!showCompleted && branchConfig.items.every(i => {
+                                                                        const val = branchData[i] || 0;
+                                                                        const c = typeof val === 'number' ? val : (val['Drag & Drop']||0) + (val['MCQ']||0);
+                                                                        const t = (typeof val === 'object' && val.target !== undefined) ? val.target : globalTarget;
+                                                                        return c >= t;
+                                                                    }) && (
+                                                                        <div className="text-center py-4 text-sm text-gray-400 italic">All complete!</div>
                                                                     )}
                                                                 </div>
                                                             </div>
                                                         );
                                                     })}
-
                                                 </div>
                                             )}
                                         </div>
