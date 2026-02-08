@@ -84,6 +84,7 @@
         const LogIn = ({ className }) => <Icon className={className}><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></Icon>;
         const GripVertical = ({ className }) => <Icon className={className}><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></Icon>;
         const ListChecks = ({ className }) => <Icon className={className}><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></Icon>;
+        const Rocket = ({ className }) => <Icon className={className}><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.1 4 0 4 0"/><path d="M12 15v5s3.03-.55 4-2c1.1-1.62 0-4 0-4"/></Icon>;
 
 
         // --- Constants ---
@@ -107,6 +108,7 @@
             'Drag & Drop': { icon: GripVertical, short: 'D&D' },
             'MCQ': { icon: ListChecks, short: 'MCQ' }
         };
+        const TYPES_ORDER = ['Drag & Drop', 'MCQ'];
 
         const DEFAULT_TARGET = 50;
         const DEFAULT_DAILY_GOAL = 100;
@@ -168,6 +170,7 @@
             const [data, setData] = useState({});
             const [globalTarget, setGlobalTarget] = useState(DEFAULT_TARGET);
             const [dailyGoal, setDailyGoal] = useState(DEFAULT_DAILY_GOAL);
+            const [planPercent, setPlanPercent] = useState('');
             
             // -- UI State --
             const [expandedStyles, setExpandedStyles] = useState({});
@@ -379,9 +382,6 @@
             const handleUpdateItemTarget = (style, branch, subItem, value) => {
                 lastLocalEdit.current = Date.now();
                 const val = parseInt(value);
-                // Allow user to clear (NaN) temporarily but store as 0 or number
-                // If they clear it, maybe they want to revert to default? 
-                // For simplicity, we just store the number. If invalid, store 0.
                 const newTarget = (isNaN(val) || val < 0) ? 0 : val;
                 
                 const newData = JSON.parse(JSON.stringify(data));
@@ -452,7 +452,7 @@
                 alert("Link copied! Send this to your other device.");
             }
 
-            // -- Calculations --
+            // -- Calculations & Plan --
             const stats = useMemo(() => {
                 let totalTasks = 0, completedTasks = 0, totalQuestionsLogged = 0, totalQuestionsTarget = 0;
 
@@ -487,8 +487,71 @@
                 finishDate.setDate(finishDate.getDate() + daysRemaining);
                 const formattedDate = finishDate.toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
 
-                return { totalTasks, completedTasks, totalQuestionsLogged, totalQuestionsTarget, overallProgress, remainingQuestions, daysRemaining, formattedDate };
+                return { 
+                    totalTasks, completedTasks, totalQuestionsLogged, totalQuestionsTarget, 
+                    overallProgress, remainingQuestions, daysRemaining, formattedDate 
+                };
             }, [data, globalTarget, dailyGoal]);
+
+            const planner = useMemo(() => {
+                if (!planPercent || isNaN(planPercent) || planPercent <= 0) return null;
+                
+                const questionsToMake = Math.ceil((stats.totalQuestionsTarget * (planPercent / 100)));
+                let remainingToAllocate = questionsToMake;
+                const planList = [];
+
+                // Strict Order: Styles -> Branches -> Items -> Types
+                for (const style of STYLES) {
+                    for (const branch of Object.keys(BRANCHES)) {
+                        for (const item of BRANCHES[branch].items) {
+                            // Check if category exists in data
+                            const catData = data[style]?.[branch]?.[item];
+                            if (!catData) continue; // Should always exist due to init, but safe check
+
+                            const itemTarget = catData.target !== undefined ? catData.target : globalTarget;
+                            
+                            // Iterate Types
+                            for (const type of TYPES_ORDER) {
+                                const currentCount = catData[type] || 0;
+                                // Need to split target? Usually half-half or just fill?
+                                // Assuming we fill strictly: D&D first, then MCQ?
+                                // Since we don't have separate targets per type, we check TOTAL for item
+                                // This is tricky. Let's assume we fill up to the ITEM target.
+                                // We can't know the split unless specified. 
+                                // Let's naively suggest adding to whatever isn't "full" based on common sense
+                                // Actually, simpler: We suggest adding to the category until it hits the item target.
+                                // But user input is split. Let's suggest adding to D&D first? 
+                                // Or simpler: Just list "Category: +N Questions" and let user pick type?
+                                // User asked for breakdown. Let's suggest adding to D&D if < 50% of target? 
+                                // Let's just suggest adding to the category generally.
+                                
+                                // Wait, to be strictly chronological, we fill item 1 fully before item 2.
+                                // Item target is shared for D&D + MCQ.
+                                const currentTotalItem = (catData['Drag & Drop'] || 0) + (catData['MCQ'] || 0);
+                                const spaceInItem = Math.max(0, itemTarget - currentTotalItem);
+                                
+                                if (spaceInItem > 0 && remainingToAllocate > 0) {
+                                    const take = Math.min(spaceInItem, remainingToAllocate);
+                                    planList.push({
+                                        id: `${style}-${branch}-${item}`,
+                                        style, branch, item,
+                                        amount: take,
+                                        current: currentTotalItem,
+                                        target: itemTarget
+                                    });
+                                    remainingToAllocate -= take;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // If we ran out of space in the project but still have % to go
+                const overflow = remainingToAllocate > 0 ? remainingToAllocate : 0;
+
+                return { questionsToMake, planList, overflow };
+
+            }, [data, globalTarget, planPercent, stats.totalQuestionsTarget]);
 
 
             // --- RENDER: LOGIN SCREEN ---
@@ -616,180 +679,237 @@
                     )}
 
                     {/* Main Content */}
-                    <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                        {/* Stats Projection */}
-                        <div className="bg-gradient-to-r from-slate-800 to-slate-900 rounded-xl shadow-md p-6 mb-8 text-white relative overflow-hidden">
-                            <div className="absolute top-0 right-0 p-4 opacity-10"><Target className="w-32 h-32 text-white" /></div>
-                            <div className="relative z-10">
-                                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-                                    <div><h2 className="text-xl font-bold flex items-center gap-2"><Calendar className="w-5 h-5 text-pink-400" /> Deadline Calculator</h2><p className="text-slate-400 text-sm mt-1">Adjust your daily target to see when you'll finish.</p></div>
-                                    <div className="flex items-center gap-4 bg-white/10 p-3 rounded-lg border border-white/10"><div className="text-right"><label className="block text-xs text-slate-400 uppercase font-bold">Daily Goal</label><div className="flex items-center gap-2 justify-end"><input type="number" value={dailyGoal || ''} onChange={(e) => handleDailyGoalChange(e.target.value)} className="w-20 bg-transparent text-2xl font-bold text-white text-right outline-none border-b border-pink-500 focus:border-white transition-colors" /><span className="text-sm text-slate-300">Qs/day</span></div></div></div>
+                    <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+                        
+                        {/* 1. Smart Planner Section */}
+                        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6 relative overflow-hidden">
+                            <div className="flex flex-col md:flex-row gap-6 items-start">
+                                <div className="flex-1">
+                                    <h2 className="text-xl font-bold flex items-center gap-2 text-slate-800">
+                                        <Rocket className="w-6 h-6 text-pink-600" /> 
+                                        Daily Planner
+                                    </h2>
+                                    <p className="text-gray-500 text-sm mt-1">
+                                        Enter the percentage progress you want to make today. We'll generate a strict chronological todo list.
+                                    </p>
+                                    <div className="mt-4 flex items-center gap-3">
+                                        <div className="relative">
+                                            <input 
+                                                type="number" 
+                                                value={planPercent}
+                                                onChange={(e) => setPlanPercent(e.target.value)}
+                                                placeholder="0"
+                                                className="w-24 p-3 pr-8 border-2 border-pink-100 rounded-lg text-lg font-bold text-pink-700 focus:border-pink-500 focus:ring-0 outline-none"
+                                            />
+                                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-pink-300 font-bold">%</span>
+                                        </div>
+                                        <span className="text-sm font-medium text-gray-400">Increase</span>
+                                    </div>
                                 </div>
-                                <div className="mt-6 pt-6 border-t border-white/10 grid grid-cols-1 md:grid-cols-3 gap-6">
-                                    <div><span className="block text-xs text-slate-400 uppercase mb-1">Total Remaining</span><span className="text-2xl font-bold text-pink-400">{stats.remainingQuestions}</span><span className="text-sm text-slate-500 ml-2">Questions</span></div>
-                                    <div><span className="block text-xs text-slate-400 uppercase mb-1">Days of Work</span><span className="text-2xl font-bold text-white">{stats.daysRemaining}</span><span className="text-sm text-slate-500 ml-2">Days</span></div>
-                                    <div><span className="block text-xs text-slate-400 uppercase mb-1">Projected Finish</span><span className="text-2xl font-bold text-green-400">{stats.formattedDate}</span></div>
+
+                                <div className="flex-1 w-full bg-slate-50 rounded-lg p-4 border border-slate-100">
+                                    {!planner ? (
+                                        <div className="text-center text-gray-400 py-4 text-sm italic">
+                                            Enter a percentage to see your plan
+                                        </div>
+                                    ) : (
+                                        <div>
+                                            <div className="flex justify-between items-end mb-4 border-b border-gray-200 pb-2">
+                                                <div>
+                                                    <span className="text-xs font-bold text-gray-400 uppercase">Target</span>
+                                                    <div className="text-2xl font-bold text-slate-800">
+                                                        +{planner.questionsToMake} <span className="text-sm font-normal text-gray-500">Questions</span>
+                                                    </div>
+                                                </div>
+                                                {planner.overflow > 0 && (
+                                                    <span className="text-xs text-red-500 font-medium">Project Full! ({planner.overflow} extra)</span>
+                                                )}
+                                            </div>
+                                            
+                                            <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
+                                                {planner.planList.length === 0 ? (
+                                                    <div className="text-green-600 text-sm font-medium">Project is already 100% complete!</div>
+                                                ) : (
+                                                    planner.planList.map((task, idx) => (
+                                                        <div key={idx} className="flex items-center justify-between bg-white p-2 rounded border border-gray-200 shadow-sm">
+                                                            <div className="flex flex-col">
+                                                                <span className="text-xs font-bold text-pink-700">{task.style}</span>
+                                                                <span className="text-[10px] text-gray-500">{task.branch} &rsaquo; {task.item}</span>
+                                                            </div>
+                                                            <div className="flex items-center gap-2">
+                                                                <div className="text-xs text-gray-400">
+                                                                    {task.current} &rarr; <span className="text-slate-800 font-bold">{task.current + task.amount}</span>
+                                                                </div>
+                                                                <div className="bg-pink-100 text-pink-700 text-xs font-bold px-2 py-1 rounded">
+                                                                    +{task.amount}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    ))
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>
 
-                        {/* Stats Grid */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                        {/* 2. Stats Grid */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                             <StatCard title="Total Progress" value={`${stats.overallProgress.toFixed(1)}%`} subtext={`${stats.totalQuestionsLogged} / ${stats.totalQuestionsTarget} Done`} icon={PieChart} />
                             <StatCard title="Completed Categories" value={`${stats.completedTasks} / ${stats.totalTasks}`} subtext="Fully populated categories" icon={CheckCircle2} />
                             <StatCard title="Active Styles" value={STYLES.length} subtext="Citation formats" icon={BookOpen} />
                             <StatCard title="Remaining Work" value={stats.remainingQuestions} subtext="Total questions left" icon={FileText} highlight={true} />
                         </div>
 
-                        {/* Filters */}
-                        <div className="flex flex-col sm:flex-row justify-between items-center mb-6 gap-4">
-                            <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto pb-2 sm:pb-0">
-                                <Filter className="w-5 h-5 text-gray-400" />
-                                <select value={filterStyle} onChange={(e) => setFilterStyle(e.target.value)} className="p-2 border rounded-md bg-white text-sm focus:outline-none focus:ring-2 focus:ring-pink-500">
-                                    <option value="All">All Styles</option>
-                                    {STYLES.map(s => <option key={s} value={s}>{s}</option>)}
-                                </select>
+                        {/* 3. Main Tracker List */}
+                        <div className="space-y-4">
+                            {/* Filters */}
+                            <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
+                                <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto pb-2 sm:pb-0">
+                                    <Filter className="w-5 h-5 text-gray-400" />
+                                    <select value={filterStyle} onChange={(e) => setFilterStyle(e.target.value)} className="p-2 border rounded-md bg-white text-sm focus:outline-none focus:ring-2 focus:ring-pink-500">
+                                        <option value="All">All Styles</option>
+                                        {STYLES.map(s => <option key={s} value={s}>{s}</option>)}
+                                    </select>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
+                                        <input type="checkbox" checked={showCompleted} onChange={(e) => setShowCompleted(e.target.checked)} className="rounded text-pink-600 focus:ring-pink-500" /> Show Completed
+                                    </label>
+                                </div>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
-                                    <input type="checkbox" checked={showCompleted} onChange={(e) => setShowCompleted(e.target.checked)} className="rounded text-pink-600 focus:ring-pink-500" /> Show Completed
-                                </label>
-                            </div>
-                        </div>
 
-                        {/* Tracker List */}
-                        <div className="space-y-6">
-                            {STYLES
-                                .filter(style => filterStyle === 'All' || filterStyle === style)
-                                .map(style => {
-                                    const styleData = data[style] || {};
-                                    // Style Progress Calc
-                                    let styleTotal = 0;
-                                    let styleCurrent = 0;
-                                    
-                                    if (styleData['Reference List']) {
-                                        Object.values(styleData['Reference List']).forEach(v => { 
-                                            // Handle number (old data) vs object (new data)
-                                            const itemTarget = (typeof v === 'object' && v.target !== undefined) ? v.target : globalTarget;
-                                            styleTotal += itemTarget; 
-                                            styleCurrent += (typeof v === 'number' ? v : (v['Drag & Drop']||0) + (v['MCQ']||0)); 
-                                        });
-                                        Object.values(styleData['In-text Citation']).forEach(v => { 
-                                            const itemTarget = (typeof v === 'object' && v.target !== undefined) ? v.target : globalTarget;
-                                            styleTotal += itemTarget; 
-                                            styleCurrent += (typeof v === 'number' ? v : (v['Drag & Drop']||0) + (v['MCQ']||0)); 
-                                        });
-                                    }
-                                    
-                                    const isStyleExpanded = expandedStyles[style];
+                            <div className="space-y-6">
+                                {STYLES
+                                    .filter(style => filterStyle === 'All' || filterStyle === style)
+                                    .map(style => {
+                                        const styleData = data[style] || {};
+                                        // Style Progress Calc
+                                        let styleTotal = 0;
+                                        let styleCurrent = 0;
+                                        
+                                        if (styleData['Reference List']) {
+                                            Object.values(styleData['Reference List']).forEach(v => { 
+                                                const itemTarget = (typeof v === 'object' && v.target !== undefined) ? v.target : globalTarget;
+                                                styleTotal += itemTarget; 
+                                                styleCurrent += (typeof v === 'number' ? v : (v['Drag & Drop']||0) + (v['MCQ']||0)); 
+                                            });
+                                            Object.values(styleData['In-text Citation']).forEach(v => { 
+                                                const itemTarget = (typeof v === 'object' && v.target !== undefined) ? v.target : globalTarget;
+                                                styleTotal += itemTarget; 
+                                                styleCurrent += (typeof v === 'number' ? v : (v['Drag & Drop']||0) + (v['MCQ']||0)); 
+                                            });
+                                        }
+                                        
+                                        const isStyleExpanded = expandedStyles[style];
 
-                                    return (
-                                        <div key={style} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                                            <div onClick={() => toggleStyle(style)} className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50 transition-colors">
-                                                <div className="flex items-center gap-4 flex-1">
-                                                    <div className={`w-12 h-12 rounded-lg ${THEME.primary} text-white font-bold flex items-center justify-center text-lg shadow-sm`}>{style.substring(0, 1)}</div>
-                                                    <div className="flex-1"><h2 className="text-lg font-bold text-gray-800">{style}</h2><div className="w-full sm:w-64"><ProgressBar current={styleCurrent} total={styleTotal} /></div></div>
+                                        return (
+                                            <div key={style} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                                                <div onClick={() => toggleStyle(style)} className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50 transition-colors">
+                                                    <div className="flex items-center gap-4 flex-1">
+                                                        <div className={`w-12 h-12 rounded-lg ${THEME.primary} text-white font-bold flex items-center justify-center text-lg shadow-sm`}>{style.substring(0, 1)}</div>
+                                                        <div className="flex-1"><h2 className="text-lg font-bold text-gray-800">{style}</h2><div className="w-full sm:w-64"><ProgressBar current={styleCurrent} total={styleTotal} /></div></div>
+                                                    </div>
+                                                    <div className="flex items-center gap-4">
+                                                        <span className="text-sm font-medium text-gray-500 hidden sm:block">{styleCurrent} / {styleTotal}</span>
+                                                        {isStyleExpanded ? <ChevronDown className="text-gray-400" /> : <ChevronRight className="text-gray-400" />}
+                                                    </div>
                                                 </div>
-                                                <div className="flex items-center gap-4">
-                                                    <span className="text-sm font-medium text-gray-500 hidden sm:block">{styleCurrent} / {styleTotal}</span>
-                                                    {isStyleExpanded ? <ChevronDown className="text-gray-400" /> : <ChevronRight className="text-gray-400" />}
-                                                </div>
-                                            </div>
 
-                                            {isStyleExpanded && (
-                                                <div className="border-t border-gray-100 bg-gray-50 p-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
-                                                    {Object.keys(BRANCHES).map(branchName => {
-                                                        const branchConfig = BRANCHES[branchName];
-                                                        const BranchIcon = branchConfig.icon;
-                                                        const SubItemIcon = branchConfig.itemIcon;
-                                                        const branchData = styleData[branchName] || {};
+                                                {isStyleExpanded && (
+                                                    <div className="border-t border-gray-100 bg-gray-50 p-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                                        {Object.keys(BRANCHES).map(branchName => {
+                                                            const branchConfig = BRANCHES[branchName];
+                                                            const BranchIcon = branchConfig.icon;
+                                                            const SubItemIcon = branchConfig.itemIcon;
+                                                            const branchData = styleData[branchName] || {};
 
-                                                        return (
-                                                            <div key={branchName} className="bg-white rounded-lg border border-gray-200 shadow-sm flex flex-col">
-                                                                <div className="p-3 border-b border-gray-100 flex items-center gap-3 bg-slate-50 rounded-t-lg">
-                                                                    <div className={`p-2 rounded-md ${branchName === 'Reference List' ? 'bg-pink-100 text-pink-700' : 'bg-slate-200 text-slate-700'}`}><BranchIcon className="w-5 h-5" /></div>
-                                                                    <h3 className="font-semibold text-gray-700">{branchName}</h3>
-                                                                </div>
+                                                            return (
+                                                                <div key={branchName} className="bg-white rounded-lg border border-gray-200 shadow-sm flex flex-col">
+                                                                    <div className="p-3 border-b border-gray-100 flex items-center gap-3 bg-slate-50 rounded-t-lg">
+                                                                        <div className={`p-2 rounded-md ${branchName === 'Reference List' ? 'bg-pink-100 text-pink-700' : 'bg-slate-200 text-slate-700'}`}><BranchIcon className="w-5 h-5" /></div>
+                                                                        <h3 className="font-semibold text-gray-700">{branchName}</h3>
+                                                                    </div>
 
-                                                                <div className="p-4 space-y-4 flex-1">
-                                                                    {branchConfig.items.map(item => {
-                                                                        const rawCounts = branchData[item] || 0;
-                                                                        const counts = typeof rawCounts === 'number' ? { 'Drag & Drop': 0, 'MCQ': rawCounts } : rawCounts;
+                                                                    <div className="p-4 space-y-4 flex-1">
+                                                                        {branchConfig.items.map(item => {
+                                                                            const rawCounts = branchData[item] || 0;
+                                                                            const counts = typeof rawCounts === 'number' ? { 'Drag & Drop': 0, 'MCQ': rawCounts } : rawCounts;
+                                                                            
+                                                                            const currentCount = (counts['Drag & Drop'] || 0) + (counts['MCQ'] || 0);
+                                                                            const itemTarget = counts.target !== undefined ? counts.target : globalTarget;
+                                                                            const isComplete = currentCount >= itemTarget;
+
+                                                                            if (!showCompleted && isComplete) return null;
+
+                                                                            return (
+                                                                                <div key={item} className="flex flex-col bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                                                                    <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-200">
+                                                                                        <div className="flex items-center gap-2">
+                                                                                            <SubItemIcon className={`w-4 h-4 ${isComplete ? 'text-green-500' : 'text-gray-500'}`} />
+                                                                                            <span className={`font-medium text-sm ${isComplete ? 'text-green-700' : 'text-gray-700'}`}>{item}</span>
+                                                                                        </div>
+                                                                                        <div className="flex items-center gap-2 bg-white px-2 py-1 rounded border border-gray-200 hover:border-pink-300 transition-colors">
+                                                                                            <span className="text-xs font-bold text-gray-500">{currentCount}</span>
+                                                                                            <span className="text-gray-300">/</span>
+                                                                                            <input 
+                                                                                                type="number"
+                                                                                                min="1"
+                                                                                                value={itemTarget || ''}
+                                                                                                onChange={(e) => handleUpdateItemTarget(style, branchName, item, e.target.value)}
+                                                                                                className="w-10 text-xs font-bold text-gray-500 text-center outline-none border-b border-transparent focus:border-pink-300 bg-transparent transition-colors p-0"
+                                                                                                onClick={(e) => e.stopPropagation()}
+                                                                                            />
+                                                                                        </div>
+                                                                                    </div>
+
+                                                                                    <div className="flex gap-4">
+                                                                                        {Object.keys(QUESTION_TYPES).map(qType => {
+                                                                                            const QIcon = QUESTION_TYPES[qType].icon;
+                                                                                            const qValue = counts[qType] || 0;
+                                                                                            return (
+                                                                                                <div key={qType} className="flex-1">
+                                                                                                    <label className="text-[10px] uppercase font-bold text-gray-400 mb-1 flex items-center gap-1">
+                                                                                                        <QIcon className="w-3 h-3" /> {QUESTION_TYPES[qType].short}
+                                                                                                    </label>
+                                                                                                    <input 
+                                                                                                        type="number"
+                                                                                                        min="0"
+                                                                                                        value={qValue || ''}
+                                                                                                        onChange={(e) => handleUpdateCount(style, branchName, item, qType, e.target.value)}
+                                                                                                        className={`w-full p-1.5 border rounded text-sm text-center outline-none transition-all ${
+                                                                                                            isComplete 
+                                                                                                                ? 'border-green-200 bg-green-50 text-green-700' 
+                                                                                                                : 'border-gray-300 focus:border-pink-500 focus:ring-1 focus:ring-pink-500 bg-white'
+                                                                                                        }`}
+                                                                                                    />
+                                                                                                </div>
+                                                                                            )
+                                                                                        })}
+                                                                                    </div>
+                                                                                </div>
+                                                                            );
+                                                                        })}
                                                                         
-                                                                        const currentCount = (counts['Drag & Drop'] || 0) + (counts['MCQ'] || 0);
-                                                                        const itemTarget = counts.target !== undefined ? counts.target : globalTarget;
-                                                                        const isComplete = currentCount >= itemTarget;
-
-                                                                        if (!showCompleted && isComplete) return null;
-
-                                                                        return (
-                                                                            <div key={item} className="flex flex-col bg-gray-50 rounded-lg p-3 border border-gray-100">
-                                                                                {/* Header Row with Editable Target */}
-                                                                                <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-200">
-                                                                                    <div className="flex items-center gap-2">
-                                                                                        <SubItemIcon className={`w-4 h-4 ${isComplete ? 'text-green-500' : 'text-gray-500'}`} />
-                                                                                        <span className={`font-medium text-sm ${isComplete ? 'text-green-700' : 'text-gray-700'}`}>{item}</span>
-                                                                                    </div>
-                                                                                    <div className="flex items-center gap-2 bg-white px-2 py-1 rounded border border-gray-200 hover:border-pink-300 transition-colors">
-                                                                                        <span className="text-xs font-bold text-gray-500">{currentCount}</span>
-                                                                                        <span className="text-gray-300">/</span>
-                                                                                        <input 
-                                                                                            type="number"
-                                                                                            min="1"
-                                                                                            value={itemTarget || ''}
-                                                                                            onChange={(e) => handleUpdateItemTarget(style, branchName, item, e.target.value)}
-                                                                                            className="w-10 text-xs font-bold text-gray-500 text-center outline-none border-b border-transparent focus:border-pink-300 bg-transparent transition-colors p-0"
-                                                                                            onClick={(e) => e.stopPropagation()}
-                                                                                        />
-                                                                                    </div>
-                                                                                </div>
-
-                                                                                {/* Inputs Row */}
-                                                                                <div className="flex gap-4">
-                                                                                    {Object.keys(QUESTION_TYPES).map(qType => {
-                                                                                        const QIcon = QUESTION_TYPES[qType].icon;
-                                                                                        const qValue = counts[qType] || 0;
-                                                                                        return (
-                                                                                            <div key={qType} className="flex-1">
-                                                                                                <label className="text-[10px] uppercase font-bold text-gray-400 mb-1 flex items-center gap-1">
-                                                                                                    <QIcon className="w-3 h-3" /> {QUESTION_TYPES[qType].short}
-                                                                                                </label>
-                                                                                                <input 
-                                                                                                    type="number"
-                                                                                                    min="0"
-                                                                                                    value={qValue || ''}
-                                                                                                    onChange={(e) => handleUpdateCount(style, branchName, item, qType, e.target.value)}
-                                                                                                    className={`w-full p-1.5 border rounded text-sm text-center outline-none transition-all ${
-                                                                                                        isComplete 
-                                                                                                            ? 'border-green-200 bg-green-50 text-green-700' 
-                                                                                                            : 'border-gray-300 focus:border-pink-500 focus:ring-1 focus:ring-pink-500 bg-white'
-                                                                                                    }`}
-                                                                                                />
-                                                                                            </div>
-                                                                                        )
-                                                                                    })}
-                                                                                </div>
-                                                                            </div>
-                                                                        );
-                                                                    })}
-                                                                    
-                                                                    {!showCompleted && branchConfig.items.every(i => {
-                                                                        const val = branchData[i] || 0;
-                                                                        const c = typeof val === 'number' ? val : (val['Drag & Drop']||0) + (val['MCQ']||0);
-                                                                        const t = (typeof val === 'object' && val.target !== undefined) ? val.target : globalTarget;
-                                                                        return c >= t;
-                                                                    }) && (
-                                                                        <div className="text-center py-4 text-sm text-gray-400 italic">All complete!</div>
-                                                                    )}
+                                                                        {!showCompleted && branchConfig.items.every(i => {
+                                                                            const val = branchData[i] || 0;
+                                                                            const c = typeof val === 'number' ? val : (val['Drag & Drop']||0) + (val['MCQ']||0);
+                                                                            const t = (typeof val === 'object' && val.target !== undefined) ? val.target : globalTarget;
+                                                                            return c >= t;
+                                                                        }) && (
+                                                                            <div className="text-center py-4 text-sm text-gray-400 italic">All complete!</div>
+                                                                        )}
+                                                                    </div>
                                                                 </div>
-                                                            </div>
-                                                        );
-                                                    })}
-                                                </div>
-                                            )}
-                                        </div>
-                                    );
-                                })}
+                                                            );
+                                                        })}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                            </div>
                         </div>
                     </main>
                 </div>
